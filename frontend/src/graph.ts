@@ -138,34 +138,36 @@ export class GraphModel {
 
   subscribe(fn: () => void) { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
 
-  sync(all: Res[]) {
+  /** Vollständigen Zustand übernehmen. instant = ohne Geburts-/Sterbe-Animation (Replay-Sprung). */
+  sync(all: Res[], instant = false) {
     const keep = new Set(all.map(r => r.uid));
-    for (const id of [...this.nodes.keys()]) if (!keep.has(id)) this.remove(id);
+    for (const id of [...this.nodes.keys()]) if (!keep.has(id)) this.remove(id, instant);
     for (const id of [...this.k8sNodes.keys()]) if (!keep.has(id)) this.k8sNodes.delete(id);
     for (const id of [...this.hpas.keys()]) if (!keep.has(id)) this.hpas.delete(id);
-    all.forEach(r => this.upsert(r));
+    all.forEach(r => this.upsert(r, instant));
   }
 
-  upsert(res: Res) {
+  upsert(res: Res, instant = false) {
     if (res.kind === 'HPA') { this.hpas.set(res.uid, res); this.notify(); return; }
     if (res.kind === 'Node') this.k8sNodes.set(res.uid, res);
     const n = this.nodes.get(res.uid);
     if (n) { n.res = res; this.schedule(); return; }
     const ns = [...this.nodes.values()].find(o => o.res.kind === 'Namespace' && o.res.name === res.namespace);
     const r = () => (Math.random() - 0.5) * (ns ? 30 : 300);
-    this.nodes.set(res.uid, { id: res.uid, res, x: (ns?.x ?? 0) + r(), y: (ns?.y ?? 0) + r(), z: (ns?.z ?? 0) + r(), born: performance.now(), metrics: this.podMetrics[res.uid] });
+    this.nodes.set(res.uid, { id: res.uid, res, x: (ns?.x ?? 0) + r(), y: (ns?.y ?? 0) + r(), z: (ns?.z ?? 0) + r(), born: instant ? 0 : performance.now(), metrics: this.podMetrics[res.uid] });
     this.schedule();
   }
 
-  remove(uid: string) {
+  remove(uid: string, instant = false) {
     if (this.hpas.delete(uid)) { this.notify(); return; }
     this.k8sNodes.delete(uid);
     const n = this.nodes.get(uid);
     if (!n) return;
     this.nodes.delete(uid);
-    n.dying = performance.now();
+    // instant: gleicher Weg wie Sterben (drei-Html verträgt kein Massen-Unmount im selben Render), nur ohne sichtbare Animation
+    n.dying = performance.now() - (instant ? DIE_MS : 0);
     this.dying.push(n);
-    setTimeout(() => { this.dying = this.dying.filter(d => d !== n); this.notify(); }, DIE_MS);
+    setTimeout(() => { this.dying = this.dying.filter(d => d !== n); this.notify(); }, instant ? 50 : DIE_MS);
     this.schedule();
   }
 

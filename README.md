@@ -46,6 +46,11 @@ npm run dev        # http://127.0.0.1:5173 (VITE_WS_URL überschreibt WS-Adresse
 
 Backend-Env: `MODE=local|readonly|production`, `PORT=7070`, `KUBE_CONTEXT=docker-desktop`, `K8S_AUTH=kubeconfig|incluster`, `NAMESPACES=ns1,ns2` (leer = alle), `TRAFFIC_SOURCE=logs|mock|none|hubble` (Default logs), `LOG_SELECTOR=kube-cosmos.io/access-log`, `MAX_FLOWS_PER_SEC=600`, `LLM_*` siehe unten.
 
+## Replay
+
+Das Backend zeichnet alle Änderungen am Cluster (Ressourcen und Events) auf: je Stunde eine Datei `backend/rec/<Datum>T<Stunde>.ndjson`, mit einem vollständigen Zustand alle 2 Minuten. Über „⏱ Replay“ in der oberen Leiste öffnet sich die Zeitleiste: Springen, Abspielen mit 1×/4×/16×/60×, rote Markierungen für Warnungen (Klick springt 30 s davor), „● Live“ zurück zur Gegenwart. Im Replay sind Befehle gesperrt; Traffic und Metriken werden noch nicht aufgezeichnet.
+Env: `REPLAY_DIR=rec` (leer = aus), `REPLAY_RETENTION_H=24`, `REPLAY_KEYFRAME_SEC=120`.
+
 ## Optional: Prometheus (CPU/RAM je Pod, Node-Last)
 
 Ohne `PROMETHEUS_URL` läuft kube-cosmos wie gehabt. Mit Prometheus (z.B. kube-prometheus-stack):

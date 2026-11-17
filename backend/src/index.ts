@@ -8,17 +8,20 @@ import { cancel, execute, isReadOnly, propose, proposeDirect, proposeManifest, s
 import { serveStatic } from './static.js';
 import { PrometheusMetrics } from './metrics.js';
 import { onStatus, setStatus, statusList } from './status.js';
+import { Player, Recorder } from './recorder.js';
 
 validateConfig();
 
 
 const state = new ClusterState(loadKubeConfig());
 const traffic = createTrafficSource(config.trafficSource, state);
+const recorder = new Recorder(state);
+const replaying = new WeakSet<object>(); // Clients im Replay bekommen keine Live-Deltas/Flows/Metriken
 // optional: Prometheus-Metriken (CPU/RAM je Pod, Node-Last); ohne PROMETHEUS_URL inaktiv
-const metrics = new PrometheusMetrics(state, () => broadcast({ type: 'metrics', pods: metrics.pods, nodes: metrics.nodes, volumes: metrics.volumes }));
-const broadcast = (m: object) => {
+const metrics = new PrometheusMetrics(state, () => broadcast({ type: 'metrics', pods: metrics.pods, nodes: metrics.nodes, volumes: metrics.volumes }, true));
+const broadcast = (m: object, liveOnly = false) => {
   const msg = JSON.stringify(m);
-  for (const c of wss.clients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of wss.clients) if (c.readyState === c.OPEN && !(liveOnly && replaying.has(c))) c.send(msg);
 };
 
 // Konsolen-Output
@@ -41,21 +44,38 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws, req) => {
   const who = authenticate(req);
   if (!who) { ws.close(4401, 'unauthorized'); return; }
-  ws.send(JSON.stringify({ type: 'snapshot', mode: config.mode, commandsEnabled: config.commandsEnabled, traffic: traffic.name,
+  const snapshot = () => ws.send(JSON.stringify({ type: 'snapshot', mode: config.mode, commandsEnabled: config.commandsEnabled, traffic: traffic.name,
     metrics: metrics.enabled ? { source: 'prometheus', pods: metrics.pods, nodes: metrics.nodes, volumes: metrics.volumes } : undefined,
-    status: statusList(), ...state.snapshot() }));
-  const off = state.onDelta(d => ws.readyState === ws.OPEN && ws.send(JSON.stringify(d)));
-  ws.on('close', off);
+    replay: recorder.enabled, status: statusList(), ...state.snapshot() }));
+  snapshot();
   const reply = (m: object) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m));
+  // Replay: eigener Player je Client; Ende/„live“ → zurück zum Live-Snapshot
+  let player: Player | undefined;
+  const goLive = () => { player?.stop(); player = undefined; replaying.delete(ws); if (ws.readyState === ws.OPEN) snapshot(); };
+  const off = state.onDelta(d => !player && ws.readyState === ws.OPEN && ws.send(JSON.stringify(d)));
+  ws.on('close', () => { off(); player?.stop(); });
 
   ws.on('message', async raw => {
     let m: any;
     try { m = JSON.parse(String(raw)); } catch { return; }
+    if (typeof m.type === 'string' && m.type.startsWith('replay:')) {
+      if (!recorder.enabled) return;
+      if (m.type === 'replay:range') return reply({ type: 'replay:range', ...recorder.range() });
+      if (m.type === 'replay:live') return goLive();
+      if (m.type === 'replay:seek') {
+        if (!player) { player = new Player(recorder, reply, goLive); replaying.add(ws); }
+        return player.seek(Number(m.ts) || Date.now() - 600_000, !!m.play, Number(m.speed) || undefined);
+      }
+      if (m.type === 'replay:play') return player?.play(Number(m.speed) || 1);
+      if (m.type === 'replay:pause') return player?.pause();
+      return;
+    }
     if (!['command', 'manifest', 'kubectl', 'confirm', 'cancel'].includes(m.type)) return;
     // rid = Anfrage-ID des Chat-Eintrags im Frontend; jede Antwort trägt sie, damit der Verlauf zugeordnet werden kann
     const rid = typeof m.rid === 'string' ? m.rid.slice(0, 64) : undefined;
     const r = (x: object) => reply({ ...x, rid });
     if (!config.commandsEnabled) return r({ type: 'commandError', error: `Befehle sind im Modus ${config.mode} deaktiviert` });
+    if (player) return r({ type: 'commandError', error: 'Im Replay sind keine Befehle möglich – erst zurück zu Live' });
     const exists = state.has.bind(state);
 
     /** Ergebnis senden und danach (asynchron) die Antwort in Alltagssprache nachliefern. */
@@ -135,10 +155,11 @@ setInterval(() => {
   if (!flowBuf.length) return;
   const msg = JSON.stringify({ type: 'flows', flows: flowBuf });
   flowBuf = [];
-  for (const c of wss.clients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of wss.clients) if (c.readyState === c.OPEN && !replaying.has(c)) c.send(msg);
 }, 100);
 
 await state.start();
+recorder.start();
 metrics.start();
 server.listen(config.port, config.host, () => {
   ready = true;

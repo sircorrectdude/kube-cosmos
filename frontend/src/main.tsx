@@ -4,6 +4,7 @@ import { Scene } from './Scene';
 import { Panel } from './Panel';
 import { Hud } from './Hud';
 import { Nav } from './Nav';
+import { Timeline } from './Timeline';
 import { useCluster } from './useCluster';
 import { CommandBar } from './CommandBar';
 import { ContextMenu, type MenuState } from './ContextMenu';
@@ -12,7 +13,9 @@ import './style.css';
 
 function App() {
   const { model, events, mode, connected, commandsEnabled, status, setUiHandler,
-    chat, ask, runCmd, note, sendManifest, confirm, cancel, clearChat, localError } = useCluster();
+    chat, ask, runCmd, note, sendManifest, confirm, cancel, clearChat, localError,
+    replay, replayRange, replaySeek, replayPlay, replayPause, replayLive } = useCluster();
+  const [replayOpen, setReplayOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
@@ -70,7 +73,9 @@ function App() {
           focus={focus} onFocus={setFocus} onMenu={(id, x, y) => setMenu({ id, x, y })} overview={overview} />
       </div>
       {clean ? <button className="unclean" onClick={() => setClean(false)} title="Panels wieder einblenden (Taste H)">▣ Panels</button> : <>
-      <Nav model={model} onClean={() => setClean(true)} onOverview={toOverview} onFilter={ns => { model.setNsFilter(ns); setSelected(null); toOverview(); }} />
+      <Nav model={model} replay={replay.available ? () => setReplayOpen(o => !o) : undefined} replayOn={replayOpen} onClean={() => setClean(true)} onOverview={toOverview} onFilter={ns => { model.setNsFilter(ns); setSelected(null); toOverview(); }} />
+      {replayOpen && <Timeline r={replay} range={replayRange} seek={replaySeek} play={replayPlay} pause={replayPause}
+        live={replayLive} onClose={() => setReplayOpen(false)} />}
       <Hud model={model} mode={mode} connected={connected} status={status} />
       <Panel model={model} selected={selected} events={events} onPick={e => {
         const n = model.eventTarget(e);
@@ -78,7 +83,7 @@ function App() {
         if (!model.visible(n)) model.setNsFilter(null);
         setSelected(n.id); setFocus(n.id);
       }} />
-      <CommandBar enabled={commandsEnabled} mode={mode} chat={chat} onLocal={onLocal} ask={ask} sendManifest={sendManifest}
+      <CommandBar enabled={commandsEnabled && !replay.active} mode={mode} chat={chat} onLocal={onLocal} ask={ask} sendManifest={sendManifest}
         confirm={confirm} cancel={cancel} clearChat={clearChat} localError={localError} />
       </>}
       {menu && !clean && (

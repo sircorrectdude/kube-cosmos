@@ -230,3 +230,20 @@ canvas { display: block; }
 .nav select.on { border-color: #3cf0a0; color: #3cf0a0; }
 .unclean { position: fixed; top: 14px; right: 14px; z-index: 20; padding: 6px 12px; border-radius: 16px; border: 1px solid #343c80; background: #0a0c22aa; color: #cfd8ff; font-size: 13px; cursor: pointer; opacity: .35; transition: opacity .2s; }
 .unclean:hover { opacity: 1; border-color: #6a7bff; }
+
+.nav button.on { border-color: #ff5fa2; color: #ff9cc6; }
+.timeline { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 32px)); z-index: 20;
+  padding: 8px 12px 6px; border-radius: 12px; border: 1px solid #343c80; background: #0a0c22e6; backdrop-filter: blur(6px); color: #cfd8ff; font-size: 12px; }
+.tlrow { display: flex; gap: 6px; align-items: center; }
+.tlrow button, .tlrow select { padding: 3px 10px; border-radius: 12px; border: 1px solid #343c80; background: #141a48; color: #cfd8ff; cursor: pointer; font-size: 12px; }
+.tlrow button:hover:not(:disabled) { border-color: #6a7bff; }
+.tlrow button:disabled { opacity: .4; cursor: default; }
+.tlbadge { padding: 2px 8px; border-radius: 10px; border: 1px solid #3cf0a0; color: #3cf0a0; font-weight: 600; letter-spacing: 1px; }
+.tlbadge.on { border-color: #ff5fa2; color: #fff; background: #ff5fa2; animation: pulse 1.6s infinite; }
+.tltime { font-variant-numeric: tabular-nums; min-width: 130px; }
+.tllive { color: #3cf0a0 !important; }
+.tltrack { position: relative; margin-top: 8px; height: 18px; }
+.tltrack input { position: absolute; inset: 0; width: 100%; margin: 0; accent-color: #ff5fa2; }
+.tlmark { position: absolute; top: -2px; width: 2px; height: 8px; margin-left: -1px; background: #ff3b5c; border-radius: 1px; cursor: pointer; z-index: 1; }
+.tlmark:hover { height: 12px; background: #ff8fa3; }
+.tlscale { display: flex; justify-content: space-between; opacity: .55; font-size: 10px; margin-top: 2px; }

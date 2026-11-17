@@ -11,6 +11,10 @@ export const config = {
   kubeContext: env.KUBE_CONTEXT ?? 'docker-desktop',
   namespaces: (env.NAMESPACES ?? '').split(',').map(s => s.trim()).filter(Boolean),
   commandsEnabled: mode !== 'readonly',
+  // Replay: Aufzeichnung der Deltas (NDJSON je Stunde + Keyframes). REPLAY_DIR leer = aus
+  replayDir: env.REPLAY_DIR ?? 'rec',
+  replayRetentionH: Number(env.REPLAY_RETENTION_H ?? 24),
+  replayKeyframeMs: Number(env.REPLAY_KEYFRAME_SEC ?? 120) * 1000,
   staticDir: env.STATIC_DIR, // gebautes Frontend (Container); leer = nur WS/API
   trafficSource: env.TRAFFIC_SOURCE ?? 'logs', // logs (echte Access-Logs) | mock | none | hubble
   // logs: Pods mit diesem Label (Schlüssel oder Schlüssel=Wert) liefern Access-Logs im CLF-Format (nginx, traefik)

@@ -31,6 +31,13 @@ const load = (): ChatEntry[] => {
 const save = (c: ChatEntry[]) => {
   try { localStorage.setItem(STORE, JSON.stringify(c.slice(-80).map(e => ({ ...e, output: e.output?.slice(0, 4000) })))); } catch { /* ohne Speicher weiter */ }
 };
+/** Replay-Zustand: active = Szene zeigt Vergangenheit; ts/wall = Uhr (ts zum Zeitpunkt wall, läuft mit speed weiter). */
+export interface ReplayState {
+  available: boolean; active: boolean; playing: boolean; speed: number; ts: number; wall: number;
+  from: number; to: number; marks: { ts: number; label: string }[];
+}
+const REPLAY0: ReplayState = { available: false, active: false, playing: false, speed: 1, ts: 0, wall: 0, from: 0, to: 0, marks: [] };
+
 const newRid = () => Math.random().toString(36).slice(2, 10);
 
 export function useCluster() {
@@ -43,12 +50,15 @@ export function useCluster() {
   const [traffic, setTraffic] = useState('none');
   const [status, setStatus] = useState<ServiceStatus[]>([]);
   const [chat, setChat] = useState<ChatEntry[]>(load);
+  const [replay, setReplay] = useState<ReplayState>(REPLAY0);
   const wsRef = useRef<WebSocket | null>(null);
   const send = useCallback((m: object) => wsRef.current?.send(JSON.stringify(m)), []);
   // UI-Aktionen aus dem Sprachmodell (Ansicht steuern); Handler setzt die App
   const uiRef = useRef<((a: UiAction[]) => void) | undefined>(undefined);
   const setUiHandler = useCallback((fn: (a: UiAction[]) => void) => { uiRef.current = fn; }, []);
 
+  const replayActive = useRef(false);
+  useEffect(() => { replayActive.current = replay.active; }, [replay.active]);
   useEffect(() => model.subscribe(() => setVersion(v => v + 1)), [model]);
   useEffect(() => save(chat), [chat]);
 
@@ -88,6 +98,12 @@ export function useCluster() {
     send({ type: 'cancel', id: e.proposal.id, rid });
   }, [chat, patch, send]);
   const clearChat = useCallback(() => setChat([]), []);
+  // ---- Replay ----
+  const replayRange = useCallback(() => send({ type: 'replay:range' }), [send]);
+  const replaySeek = useCallback((ts: number, play: boolean, speed?: number) => send({ type: 'replay:seek', ts, play, speed }), [send]);
+  const replayPlay = useCallback((speed: number) => send({ type: 'replay:play', speed }), [send]);
+  const replayPause = useCallback(() => send({ type: 'replay:pause' }), [send]);
+  const replayLive = useCallback(() => send({ type: 'replay:live' }), [send]);
   const localError = useCallback((userText: string, error: string) => { const rid = start(userText); patch(rid, { pending: false, error }); }, [start, patch]);
 
   useEffect(() => {
@@ -95,7 +111,7 @@ export function useCluster() {
     const connect = () => {
       ws = wsRef.current = new WebSocket(WS_URL);
       ws.onopen = () => setConnected(true);
-      ws.onclose = () => { setConnected(false); model.sync([]); // Backend weg → Objekte verglühen, Snapshot bringt sie zurück
+      ws.onclose = () => { setConnected(false); setReplay(r => ({ ...r, active: false, playing: false })); model.sync([]); // Backend weg → Objekte verglühen, Snapshot bringt sie zurück
         if (!closed) retry = window.setTimeout(connect, 2000); };
       ws.onmessage = m => {
         const d = JSON.parse(m.data);
@@ -111,10 +127,19 @@ export function useCluster() {
         else if (rid && d.type === 'answer') patch(rid, { answer: d.text });
         else if (rid && d.type === 'cancelled') patch(rid, { status: 'cancelled', pending: false });
         else if (rid && d.type === 'commandError') patch(rid, { pending: false, error: d.error });
+        else if (d.type === 'replay:range') setReplay(r => ({ ...r, from: d.from, to: d.to, marks: d.marks }));
+        else if (d.type === 'replay:state') {
+          model.sync(d.resources, true);
+          setEvents([...d.events].reverse());
+          setReplay(r => ({ ...r, active: true, ts: d.ts, wall: Date.now() }));
+        }
+        else if (d.type === 'replay:clock') setReplay(r => ({ ...r, active: true, ts: d.ts, wall: Date.now(), playing: d.playing, speed: d.speed }));
         else if (d.type === 'snapshot') {
+          const wasReplay = replayActive.current;
+          setReplay(r => ({ ...r, available: !!d.replay, active: false, playing: false }));
           model.metricsSource = d.metrics?.source;
           setMode(d.mode); setTraffic(d.traffic ?? 'none'); setCommandsEnabled(d.commandsEnabled); setStatus(d.status ?? []);
-          model.sync(d.resources);
+          model.sync(d.resources, wasReplay);
           if (d.metrics) model.applyMetrics(d.metrics.pods, d.metrics.nodes, d.metrics.volumes);
           setEvents(d.events.slice(-100).reverse());
         }
@@ -130,5 +155,6 @@ export function useCluster() {
   return {
     model, events, mode, connected, version, commandsEnabled, traffic, status, setUiHandler,
     chat, ask, runCmd, note, sendManifest, confirm, cancel, clearChat, localError,
+    replay, replayRange, replaySeek, replayPlay, replayPause, replayLive,
   };
 }
