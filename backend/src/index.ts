@@ -18,7 +18,11 @@ const traffic = createTrafficSource(config.trafficSource, state);
 const recorder = new Recorder(state);
 const replaying = new WeakSet<object>(); // Clients im Replay bekommen keine Live-Deltas/Flows/Metriken
 // optional: Prometheus-Metriken (CPU/RAM je Pod, Node-Last); ohne PROMETHEUS_URL inaktiv
-const metrics = new PrometheusMetrics(state, () => broadcast({ type: 'metrics', pods: metrics.pods, nodes: metrics.nodes, volumes: metrics.volumes }, true));
+const metrics = new PrometheusMetrics(state, () => {
+  const m = { type: 'metrics' as const, pods: metrics.pods, nodes: metrics.nodes, volumes: metrics.volumes };
+  recorder.metrics(m);
+  broadcast(m, true);
+});
 const broadcast = (m: object, liveOnly = false) => {
   const msg = JSON.stringify(m);
   for (const c of wss.clients) if (c.readyState === c.OPEN && !(liveOnly && replaying.has(c))) c.send(msg);
@@ -136,7 +140,7 @@ else setStatus('llm', 'Sprachmodell', 'unknown', config.commandEngine === 'kubec
 // Flows gebündelt alle 100 ms verschicken
 let flowBuf: Flow[] = [];
 let flowCount = 0;
-traffic.start(f => { flowCount++; if (flowBuf.length < 2000) flowBuf.push(f); });
+traffic.start(f => { flowCount++; recorder.flow(f); if (flowBuf.length < 2000) flowBuf.push(f); });
 // Traffic-Status alle 5 s: Quelle, Streams, Rate
 const trafficStatus = () => {
   const rate = flowCount / 2 / 5; flowCount = 0; // Request+Response = 1 Anfrage

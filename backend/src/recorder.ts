@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import type { Flow } from './traffic.js';
 import { config } from './config.js';
 import type { ClusterState } from './k8s.js';
 import { setStatus } from './status.js';
@@ -20,6 +22,8 @@ export class Recorder {
   private file = '';
   private buf = new Map<string, string[]>();
   private marks = new Map<string, { size: number; marks: Mark[] }>(); // Cache je Datei
+  private flowAgg = new Map<string, { f: Flow; n: number }>();          // Flows der laufenden Sekunde, verdichtet
+  private lastMetrics?: object;                                          // für Keyframes
 
   constructor(private state: ClusterState) {}
 
@@ -31,18 +35,38 @@ export class Recorder {
     this.state.onDelta(d => this.write(d));
     this.write(this.keyframe());
     setInterval(() => this.write(this.keyframe()), config.replayKeyframeMs).unref();
-    setInterval(() => this.flush(), 1000).unref();
+    setInterval(() => { this.flushFlows(); this.flush(); }, 1000).unref();
     setInterval(() => this.prune(), 10 * 60_000).unref();
     this.prune();
   }
 
-  private keyframe() { return { type: 'keyframe', ...this.state.snapshot() }; }
+  private keyframe() { return { type: 'keyframe', ...this.state.snapshot(), metrics: this.lastMetrics }; }
+
+  /** Flow merken; pro Sekunde je Verbindung/Art/Ergebnis/Status nur Anzahl + ein Beispiel. */
+  flow(f: Flow) {
+    if (!this.enabled) return;
+    const k = `${f.src}|${f.dst}|${f.type}|${f.verdict}|${f.httpStatus ?? ''}|${f.httpMethod ?? ''}`;
+    const g = this.flowAgg.get(k);
+    if (g) g.n++; else this.flowAgg.set(k, { f, n: 1 });
+  }
+  private flushFlows() {
+    if (!this.flowAgg.size) return;
+    this.write({ type: 'flowsAgg', groups: [...this.flowAgg.values()] });
+    this.flowAgg.clear();
+  }
+  /** Metrik-Update (WS-Nachricht type:'metrics') aufzeichnen. */
+  metrics(m: { type: 'metrics'; pods: object; nodes: object; volumes?: object }) {
+    this.lastMetrics = m;
+    if (this.enabled) this.write(m);
+  }
   private fileFor(ts: number) { return path.join(this.dir, new Date(ts).toISOString().slice(0, 13) + '.ndjson'); }
 
   private write(m: any, ts = Date.now()) {
     const f = this.fileFor(ts);
-    if (f !== this.file) { // neue Stunde: Datei beginnt immer mit einem Keyframe
+    if (f !== this.file) { // neue Stunde: Datei beginnt immer mit einem Keyframe; vorige Stunde komprimieren
+      const prev = this.file;
       this.file = f;
+      if (prev) { this.flush(); this.gzip(prev); }
       if (m.type !== 'keyframe') this.push(f, { ts, m: this.keyframe() });
     }
     this.push(f, { ts, m });
@@ -57,6 +81,11 @@ export class Recorder {
     this.buf.clear();
   }
 
+  private gzip(file: string) {
+    try { fs.writeFileSync(file + '.gz', zlib.gzipSync(fs.readFileSync(file))); fs.unlinkSync(file); }
+    catch (e: any) { console.warn(`[replay] gzip ${e.message}`); }
+  }
+
   private prune() {
     const cutoff = Date.now() - config.replayRetentionH * HOUR;
     for (const f of this.files()) if (f.start + HOUR < cutoff) { try { fs.unlinkSync(f.path); this.marks.delete(f.path); } catch { /* egal */ } }
@@ -69,14 +98,18 @@ export class Recorder {
   /** Aufzeichnungsdateien, aufsteigend nach Stunde. */
   files() {
     let names: string[] = [];
-    try { names = fs.readdirSync(this.dir).filter(n => /^\d{4}-\d\d-\d\dT\d\d\.ndjson$/.test(n)).sort(); } catch { /* leer */ }
+    try { names = fs.readdirSync(this.dir).filter(n => /^\d{4}-\d\d-\d\dT\d\d\.ndjson(\.gz)?$/.test(n)).sort(); } catch { /* leer */ }
+    // nicht komprimierte Reste älterer Stunden (z.B. nach Neustart) nachträglich packen
+    for (const n of names) if (!n.endsWith('.gz') && path.join(this.dir, n) !== this.file
+      && Date.parse(n.slice(0, 13) + ':00:00Z') + HOUR < Date.now() && !names.includes(n + '.gz')) { this.gzip(path.join(this.dir, n)); }
+    try { names = fs.readdirSync(this.dir).filter(n => /^\d{4}-\d\d-\d\dT\d\d\.ndjson(\.gz)?$/.test(n)).sort(); } catch { /* leer */ }
     return names.map(n => ({ path: path.join(this.dir, n), start: Date.parse(n.slice(0, 13) + ':00:00Z') }));
   }
 
   read(file: string): Entry[] {
     if (this.buf.has(file)) this.flush();
     let text = '';
-    try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }
+    try { const b = fs.readFileSync(file); text = (file.endsWith('.gz') ? zlib.gunzipSync(b) : b).toString('utf8'); } catch { return []; }
     const out: Entry[] = [];
     for (const line of text.split('\n')) { if (!line) continue; try { out.push(JSON.parse(line)); } catch { /* abgeschnittene Zeile */ } }
     return out;
@@ -122,6 +155,7 @@ export class Player {
   private timer?: NodeJS.Timeout;
   private clockTimer?: NodeJS.Timeout;
   private reread = 0;
+  private slices: NodeJS.Timeout[] = [];
 
   constructor(private rec: Recorder, private send: (m: object) => void, private onEnd: () => void) {}
 
@@ -141,16 +175,19 @@ export class Player {
     const kf = this.entries[k].m;
     const res = new Map<string, any>(kf.resources.map((r: any) => [r.uid, r]));
     const events: any[] = [...(kf.events ?? [])];
+    let met = kf.metrics;
     let i = k + 1;
     for (; i < this.entries.length && this.entries[i].ts <= ts; i++) {
       const m = this.entries[i].m;
       if (m.type === 'upsert') res.set(m.res.uid, m.res);
       else if (m.type === 'delete') res.delete(m.uid);
       else if (m.type === 'event') events.push(m.event);
+      else if (m.type === 'metrics') met = m;
     }
     this.idx = i;
     this.ts = ts;
     this.send({ type: 'replay:state', ts, resources: [...res.values()], events: events.slice(-100) });
+    if (met) this.send(met);
     play ? this.play(this.speed) : this.clock();
   }
 
@@ -172,6 +209,31 @@ export class Player {
     if (this.playing) this.ts = this.now();
     this.playing = false;
     clearInterval(this.timer); clearInterval(this.clockTimer);
+    this.slices.forEach(clearTimeout); this.slices = [];
+  }
+
+  /**
+   * Verdichtete Sekunde wieder zu Flows: über die (abgespielte) Sekunde in 5 Portionen verteilt.
+   * Bei hohem Tempo ausgedünnt (Budget je Sekunde), damit die Kometen nicht überlaufen.
+   */
+  private emitFlows(groups: { f: Flow; n: number }[]) {
+    const total = groups.reduce((a, g) => a + g.n, 0);
+    const budget = this.speed <= 1 ? 400 : Math.max(30, 400 / this.speed);
+    const scale = Math.min(1, budget / total);
+    const out: Flow[] = [];
+    for (const g of groups) {
+      const x = g.n * scale;
+      const k = Math.floor(x) + (Math.random() < x % 1 ? 1 : 0);
+      for (let j = 0; j < k; j++) out.push(g.f);
+    }
+    out.sort(() => Math.random() - 0.5);
+    const parts = 5, per = Math.ceil(out.length / parts), step = 1000 / this.speed / parts;
+    for (let p = 0; p < parts && p * per < out.length; p++) {
+      const chunk = out.slice(p * per, (p + 1) * per);
+      if (p === 0) this.send({ type: 'flows', flows: chunk });
+      else this.slices.push(setTimeout(() => this.send({ type: 'flows', flows: chunk }), p * step));
+    }
+    if (this.slices.length > 50) this.slices = this.slices.slice(-50);
   }
 
   private clock() { this.send({ type: 'replay:clock', ts: this.now(), playing: this.playing, speed: this.speed }); }
@@ -182,7 +244,8 @@ export class Player {
     while (true) {
       while (this.idx < this.entries.length && this.entries[this.idx].ts <= t) {
         const m = this.entries[this.idx++].m;
-        if (m.type !== 'keyframe') this.send(m);
+        if (m.type === 'flowsAgg') this.emitFlows(m.groups);
+        else if (m.type !== 'keyframe') this.send(m);
       }
       if (this.idx < this.entries.length) return;
       const files = this.rec.files();
