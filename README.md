@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo-wordmark.svg" alt="kube-cosmos" width="560"></p>
+
 # kube-cosmos
 
 Echtzeit-3D-Visualisierung eines Kubernetes-Clusters: Namespaces sind Galaxien, Pods Sterne, Deployments, Services, Ingresses und PVCs eigene Himmelskörper, Traffic fliegt als Kometen zwischen ihnen. Steuerung per Maus, Text oder Sprache; ein Sprachmodell übersetzt Fragen in `kubectl`-Befehle (lesende laufen sofort, ändernde erst nach Bestätigung).
