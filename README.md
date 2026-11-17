@@ -2,6 +2,8 @@
 
 Echtzeit-3D-Visualisierung eines Kubernetes-Clusters: Namespaces sind Galaxien, Pods Sterne, Deployments, Services, Ingresses und PVCs eigene Himmelskörper, Traffic fliegt als Kometen zwischen ihnen. Steuerung per Maus, Text oder Sprache; ein Sprachmodell übersetzt Fragen in `kubectl`-Befehle (lesende laufen sofort, ändernde erst nach Bestätigung).
 
+![kube-cosmos: Namespaces als Galaxien, Traffic als Kometen, Live-Events und Sprachsteuerung](docs/screenshot.png)
+
 > Status: frühe Version 0.1.0. Der Modus `production` (Auth, Audit) ist noch nicht implementiert.
 
 **Features:** Live-Abgleich per Watch-API · echter Traffic aus Access-Logs (nginx, Traefik) · optional CPU/RAM aus Prometheus · Probes, HPA, Events, Ingress-Routen · Namespace-Filter, Übersicht, „Nur Szene“-Modus · Kontextmenü mit kubectl-Aktionen · Sprach-/Textsteuerung (Gemini, jede OpenAI-kompatible API oder lokal Ollama).
