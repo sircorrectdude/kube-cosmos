@@ -1,0 +1,22 @@
+# Lasttest mit ApacheBench über den Ingress: Traefik → shop-frontend → shop-api (echte Requests, live in kube-cosmos sichtbar).
+# Starten:   kubectl apply -f demo/perf-job.yaml
+# Ergebnis:  kubectl -n traffic-demo logs -f job/perf
+# Erneut:    kubectl -n traffic-demo delete job perf && kubectl apply -f demo/perf-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: perf
+  namespace: traffic-demo
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { app: perf }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ab
+          image: httpd:2.4-alpine
+          command: ["ab", "-n", "20000", "-c", "40", "-s", "10", "-H", "Host: shop.local", "http://traefik.traefik.svc.cluster.local/api/"]
+          resources: { requests: { cpu: 100m, memory: 16Mi }, limits: { memory: 64Mi } }

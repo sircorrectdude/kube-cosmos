@@ -1,0 +1,293 @@
+# Echte Request/Response-Daten für kube-cosmos (TRAFFIC_SOURCE=logs):
+# loadgen (busybox) → Traefik (Ingress, Host shop.local) → shop-frontend (nginx) → shop-api (nginx).
+# Pods mit Label kube-cosmos.io/access-log werden mitgelesen. Für den Hop loadgen → Traefik muss Traefik
+# Access-Logs schreiben und das Label tragen (siehe README, Abschnitt "Echter Traffic").
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traffic-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shop-nginx
+  namespace: traffic-demo
+data:
+  frontend.conf: |
+    server {
+      listen 80;
+      location = /       { return 200 "frontend ok\n"; }
+      location /api/     { proxy_pass http://shop-api.traffic-demo.svc.cluster.local/; }
+      location /catalog/ { proxy_pass http://catalog.traffic-demo.svc.cluster.local/; }
+      location /cart/    { proxy_pass http://cart.traffic-demo.svc.cluster.local/; }
+      location /pay/     { proxy_pass http://payment.traffic-demo.svc.cluster.local/; }
+      location /reco/    { proxy_pass http://recommender.traffic-demo.svc.cluster.local/; }
+      location = /error  { return 500; }
+    }
+  simple.conf: |
+    server {
+      listen 80;
+      location = /       { default_type application/json; return 200 '{"ok":true}'; }
+      location /         { return 404; }
+    }
+  payment.conf: |
+    # zufällige Fehler: 3 % normal, 25 % unter "heavy"-Last
+    split_clients "${request_id}" $pay_fail { 3% 1; * 0; }
+    split_clients "${request_id}h" $heavy_fail { 25% 1; * 0; }
+    server {
+      listen 80;
+      location = /      { if ($pay_fail) { return 503; } default_type application/json; return 200 '{"paid":true}'; }
+      location = /heavy { if ($heavy_fail) { return 503; } default_type application/json; return 200 '{"paid":true}'; }
+      location = /healthz { access_log off; return 200; }
+      location /        { return 404; }
+    }
+  api.conf: |
+    server {
+      listen 80;
+      location = /       { default_type application/json; return 200 '{"ok":true}'; }
+      location = /fail   { return 503; }
+      location /         { return 404; }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-api
+  namespace: traffic-demo
+spec:
+  selector: { app: shop-api }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-frontend
+  namespace: traffic-demo
+spec:
+  selector: { app: shop-frontend }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: traffic-demo
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: shop.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: shop-frontend, port: { number: 80 } } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: traffic-demo
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: shop-api } }
+  template:
+    metadata:
+      labels: { app: shop-api, kube-cosmos.io/access-log: nginx }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: api.conf }]
+          readinessProbe: { httpGet: { path: /, port: 80 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 20m, memory: 16Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: conf, configMap: { name: shop-nginx } }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-frontend
+  namespace: traffic-demo
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: shop-frontend } }
+  template:
+    metadata:
+      labels: { app: shop-frontend, kube-cosmos.io/access-log: nginx }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: frontend.conf }]
+          readinessProbe: { httpGet: { path: /, port: 80 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 20m, memory: 16Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: conf, configMap: { name: shop-nginx } }]
+---
+# Gleichmäßige Grundlast über den Ingress (wie echte Nutzer) mit gelegentlichen Fehlern (500 Frontend, 503 API)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: traffic-demo
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: loadgen } }
+  template:
+    metadata:
+      labels: { app: loadgen }
+    spec:
+      containers:
+        - name: loadgen
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ING=http://traefik.traefik.svc.cluster.local
+              get() { wget -q -O /dev/null --header "Host: shop.local" "$ING$1"; }
+              while true; do
+                get /
+                get /api/
+                [ $((RANDOM % 10)) -eq 0 ] && get /error
+                [ $((RANDOM % 12)) -eq 0 ] && get /api/fail
+                sleep 0.3
+              done
+          resources: { requests: { cpu: 10m, memory: 8Mi }, limits: { memory: 32Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: catalog, namespace: traffic-demo }
+spec:
+  selector: { app: catalog }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: catalog, namespace: traffic-demo }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: catalog } }
+  template:
+    metadata:
+      labels: { app: catalog, kube-cosmos.io/access-log: nginx }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: simple.conf }]
+          readinessProbe: { httpGet: { path: /, port: 80 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 20m, memory: 16Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: conf, configMap: { name: shop-nginx } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: cart, namespace: traffic-demo }
+spec:
+  selector: { app: cart }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: cart, namespace: traffic-demo }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: cart } }
+  template:
+    metadata:
+      labels: { app: cart, kube-cosmos.io/access-log: nginx }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: simple.conf }]
+          readinessProbe: { httpGet: { path: /, port: 80 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 20m, memory: 16Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: conf, configMap: { name: shop-nginx } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: payment, namespace: traffic-demo }
+spec:
+  selector: { app: payment }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: payment, namespace: traffic-demo }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: payment } }
+  template:
+    metadata:
+      labels: { app: payment, kube-cosmos.io/access-log: nginx }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [{ containerPort: 80 }]
+          volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: payment.conf }]
+          readinessProbe: { httpGet: { path: /healthz, port: 80 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 20m, memory: 16Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: conf, configMap: { name: shop-nginx } }]
+---
+# recommender: erzeugt echte CPU- und Speicherlast (für die optionale Prometheus-Darstellung)
+#   /work      ~15 ms CPU pro Request (pbkdf2)      → CPU-Limit 300m → Pod glüht orange
+#   /mem?mb=N  belegt N MB RAM (Limit 192Mi)         → > 85 % → Pod pulsiert rot
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: recommender, namespace: traffic-demo }
+data:
+  server.js: |
+    const http = require('http'), crypto = require('crypto');
+    let hog = [], hogMb = 0;
+    const log = (req, code) => {
+      const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
+      console.log(`${ip} - - [${new Date().toISOString()}] "${req.method} ${req.url} HTTP/1.1" ${code} 0 "-" "-"`);
+    };
+    http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://x');
+      if (u.pathname === '/healthz') return res.end('ok');
+      let code = 200, body = '{"ok":true}';
+      if (u.pathname === '/work') {
+        crypto.pbkdf2Sync('kube', 'cosmos', Number(u.searchParams.get('n') || 25000), 32, 'sha256');
+        body = '{"recommendations":3}';
+      } else if (u.pathname === '/mem') {
+        const mb = Math.max(0, Math.min(200, Number(u.searchParams.get('mb') || 0)));
+        if (mb < hogMb) { hog = []; hogMb = 0; }
+        while (hogMb < mb) { hog.push(Buffer.alloc(1048576, 1)); hogMb++; }
+        body = `{"heldMb":${hogMb}}`;
+      } else if (u.pathname !== '/') code = 404;
+      log(req, code);
+      res.writeHead(code, { 'content-type': 'application/json' }).end(body);
+    }).listen(8080);
+---
+apiVersion: v1
+kind: Service
+metadata: { name: recommender, namespace: traffic-demo }
+spec:
+  selector: { app: recommender }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: recommender, namespace: traffic-demo }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: recommender } }
+  template:
+    metadata:
+      labels: { app: recommender, kube-cosmos.io/access-log: node }
+    spec:
+      containers:
+        - name: node
+          image: node:22-alpine
+          command: ["node", "/app/server.js"]
+          ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: app, mountPath: /app }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 5 }
+          resources:
+            requests: { cpu: 50m, memory: 48Mi }
+            limits: { cpu: 300m, memory: 192Mi }
+      volumes: [{ name: app, configMap: { name: recommender } }]

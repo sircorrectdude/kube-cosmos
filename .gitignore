@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.local
+.idea/
+.claude/
+# interne Arbeitsnotizen
+FORTSCHRITT.md
+CLAUDE.md

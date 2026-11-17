@@ -1,0 +1,89 @@
+# kube-cosmos im Cluster, Stufe 1: nur Visualisierung (MODE=readonly, Befehle deaktiviert).
+# Rechte: nur lesen (keine Secrets, kein Schreiben). Zugang nur per Port-Forward (ClusterIP, kein Ingress).
+#   kubectl apply -f deploy/readonly.yaml
+#   kubectl -n kube-cosmos port-forward svc/kube-cosmos 7070:80   → http://localhost:7070
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-cosmos
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-cosmos
+  namespace: kube-cosmos
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-cosmos-reader
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, nodes, pods, services, events, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]          # nur für TRAFFIC_SOURCE=logs (Access-Logs markierter Pods)
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-cosmos-reader
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kube-cosmos-reader }
+subjects:
+  - { kind: ServiceAccount, name: kube-cosmos, namespace: kube-cosmos }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-cosmos
+  namespace: kube-cosmos
+  labels: { app: kube-cosmos }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kube-cosmos } }
+  template:
+    metadata:
+      labels: { app: kube-cosmos }
+    spec:
+      serviceAccountName: kube-cosmos
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: kube-cosmos
+          image: kube-cosmos:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: MODE, value: readonly }
+            - { name: K8S_AUTH, value: incluster }
+            - { name: TRAFFIC_SOURCE, value: logs }        # logs | mock | none
+            - { name: NAMESPACES, value: "" }              # leer = alle; sonst z.B. "team-a,team-b"
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 20 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-cosmos
+  namespace: kube-cosmos
+spec:
+  type: ClusterIP
+  selector: { app: kube-cosmos }
+  ports: [{ name: http, port: 80, targetPort: http }]
