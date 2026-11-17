@@ -2,9 +2,9 @@
 
 Echtzeit-3D-Visualisierung eines Kubernetes-Clusters: Namespaces sind Galaxien, Pods Sterne, Deployments, Services, Ingresses und PVCs eigene Himmelskörper, Traffic fliegt als Kometen zwischen ihnen. Steuerung per Maus, Text oder Sprache; ein Sprachmodell übersetzt Fragen in `kubectl`-Befehle (lesende laufen sofort, ändernde erst nach Bestätigung).
 
-![Demo: Namespace wählen, per Text zu shop-frontend fliegen, Nur-Szene-Modus, Node-Ansicht](docs/demo.gif)
+![Demo: Namespace wählen, per Text zu shop-frontend fliegen, Problem-Pod finden und vom Sprachmodell erklären lassen](docs/demo.webp)
 
-[Ganzes Video (MP4, 46 s)](docs/demo.mp4)
+[Ganzes Video (MP4, 70 s): zusätzlich Einstellungen, Node-Ansicht und Nur-Szene-Modus](docs/demo.mp4)
 
 ![kube-cosmos: Namespaces als Galaxien, Traffic als Kometen, Live-Events und Sprachsteuerung](docs/screenshot.png)
 
